@@ -23,13 +23,19 @@ local helper_service
 local coreui_service
 local notification_service
 local ini_service
+local tween_service
+local userinput_service
+local http_service
+local _empty = table.freeze({})
 
 local fui = {
-	windows = { },
-	elements = { }
+	windows = table.create(8),
+	elements = table.create(8)
 }
+setmetatable(fui.windows, { __mode = "v" })
+setmetatable(fui.elements, { __mode = "v" })
 
-fui.icons = {
+fui.icons = table.freeze({
 	Dot = "rbxasset://textures/whiteCircle.png",
 	Arrow = "rbxasset://textures/ui/AvatarContextMenu_Arrow.png",
 	Close = "rbxasset://textures/loading/cancelButton.png",
@@ -108,7 +114,7 @@ fui.icons = {
 	Character = "rbxassetid://13285102351",
 	Menu = "rbxassetid://14895352864",
 	Search = "rbxassetid://105364076467397",
-}
+})
 
 service_proxy = setmetatable({}, {
 	__index = function(self, Name: string)
@@ -127,14 +133,9 @@ local global_tween_info = TweenInfo.new(
 	Classes
 ]]
 
-local container_base = { }
+local container_base = table.create(8)
 
-local window_class = {
-	window = nil,
-	destroyed = false,
-	tweens = { },
-	connections = { }
-}
+local window_class = table.create(8)
 window_class.__index = window_class
 setmetatable(window_class, { __index = container_base })
 
@@ -165,8 +166,8 @@ do
 	function window_class:AddTween(obj, props)
 		if not obj then return end
 
-		local tween = service_proxy.TweenService:Create(obj, global_tween_info, props)
-		return window_class:_TrackTween(tween)
+		local tween = tween_service:Create(obj, global_tween_info, props)
+		return self:_TrackTween(tween)
 	end
 
 	function window_class:Collapse()
@@ -281,7 +282,7 @@ do
 			Enum.EasingDirection.In
 		)
 
-		local close_tween = self:_TrackTween(service_proxy.TweenService:Create(
+		local close_tween = self:_TrackTween(tween_service:Create(
 			window,
 			close_tween_info,
 			{
@@ -302,34 +303,42 @@ do
 			))
 
 		local fade_tweens = {}
-
-		for _,obj in ipairs(window:GetDescendants()) do
+		
+		local descendants = window:GetDescendants()
+		for i = 1, #descendants do
+			local obj = descendants[i]
 			if obj:IsA("GuiObject") then
-				local tween = self:_TrackTween(service_proxy.TweenService:Create(
+				local tween = self:_TrackTween(tween_service:Create(
 					obj,
 					close_tween_info,
-					{BackgroundTransparency = 1}
-					))
-
-				table.insert(fade_tweens, tween)
+					{
+						BackgroundTransparency = 1
+					}
+				))
+				
+				fade_tweens[#fade_tweens+1] = tween
 				tween:Play()
 			elseif obj:IsA("TextLabel") or obj:IsA("TextButton") then
-				local tween = self:_TrackTween(service_proxy.TweenService:Create(
+				local tween = self:_TrackTween(tween_service:Create(
 					obj,
 					close_tween_info,
-					{TextTransparency = 1}
-					))
+					{
+						TextTransparency = 1
+					}
+				))
 
-				table.insert(fade_tweens, tween)
+				fade_tweens[#fade_tweens+1] = tween
 				tween:Play()
 			elseif obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
-				local tween = self:_TrackTween(service_proxy.TweenService:Create(
+				local tween = self:_TrackTween(tween_service:Create(
 					obj,
 					close_tween_info,
-					{ImageTransparency = 1}
-					))
+					{
+						ImageTransparency = 1
+					}
+				))
 
-				table.insert(fade_tweens, tween)
+				fade_tweens[#fade_tweens+1] = tween
 				tween:Play()
 			end
 		end
@@ -341,7 +350,8 @@ do
 	end
 	
 	function window_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 	
@@ -364,6 +374,9 @@ do
 	end
 
 	function window_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,tween in ipairs(self.tweens) do
 			pcall(function()
 				tween:Cancel()
@@ -371,18 +384,11 @@ do
 		end
 
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 
 		if self.window then
-			local root = self.window:FindFirstAncestorOfClass("ScreenGui")
-			if root then
-				root:Destroy()
-			else
-				self.window:Destroy()
-			end
+			self.window:Destroy()
 		end
 		
 		self.connections = nil
@@ -633,13 +639,13 @@ do
 		end))
 
 		self:_TrackConnection(title_bar_2.InputEnded:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 then
-				dragging = false
-				active_tween = nil
-			end
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+			
+			dragging = false
+			active_tween = nil
 		end))
 
-		self:_TrackConnection(service_proxy.UserInputService.InputChanged:Connect(function(input)
+		self:_TrackConnection(userinput_service.InputChanged:Connect(function(input)
 			if not dragging then return end
 			if input.UserInputType ~= Enum.UserInputType.MouseMovement 
 				and input.UserInputType ~= Enum.UserInputType.Touch then
@@ -665,7 +671,7 @@ do
 				active_tween = nil
 			end
 
-			active_tween = self:_TrackTween(service_proxy.TweenService:Create(
+			active_tween = self:_TrackTween(tween_service:Create(
 				self.window,
 				global_tween_info,
 				{ Position = target_window_pos }
@@ -759,7 +765,7 @@ do
 				hover_tween:Cancel()
 			end
 
-			hover_tween = self:_TrackTween(service_proxy.TweenService:Create(
+			hover_tween = self:_TrackTween(tween_service:Create(
 				hover_circle,
 				global_tween_info,
 				{
@@ -776,7 +782,7 @@ do
 				hover_tween:Cancel()
 			end
 
-			hover_tween = self:_TrackTween(service_proxy.TweenService:Create(
+			hover_tween = self:_TrackTween(tween_service:Create(
 				hover_circle,
 				global_tween_info,
 				{
@@ -866,7 +872,7 @@ do
 				hover_tween:Cancel()
 			end
 
-			hover_tween = self:_TrackTween(service_proxy.TweenService:Create(
+			hover_tween = self:_TrackTween(tween_service:Create(
 				hover_circle,
 				global_tween_info,
 				{
@@ -883,7 +889,7 @@ do
 				hover_tween:Cancel()
 			end
 
-			hover_tween = self:_TrackTween(service_proxy.TweenService:Create(
+			hover_tween = self:_TrackTween(tween_service:Create(
 				hover_circle,
 				global_tween_info,
 				{
@@ -899,10 +905,7 @@ do
 	end
 end
 
-local notif_class = {
-	notif = nil,
-	content_frame = nil
-}
+local notif_class = table.create(8)
 notif_class.__index = notif_class
 
 do
@@ -930,7 +933,7 @@ do
 		if not self.notif then return end
 		if not self.duration then return end
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.notif.Border,
 			global_tween_info,
 			{
@@ -938,7 +941,7 @@ do
 			}
 		):Play()
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.content_frame.Title,
 			global_tween_info,
 			{
@@ -946,7 +949,7 @@ do
 			}
 		):Play()
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.content_frame.Body,
 			global_tween_info,
 			{
@@ -954,7 +957,7 @@ do
 			}
 		):Play()
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.content_frame.Icon,
 			global_tween_info,
 			{
@@ -962,7 +965,7 @@ do
 			}
 		):Play()
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.notif,
 			global_tween_info,
 			{
@@ -971,7 +974,7 @@ do
 			}
 		):Play()
 		
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.notif.Gradient,
 			TweenInfo.new(
 				self.duration,
@@ -987,7 +990,7 @@ do
 	function notif_class:Pull()
 		if not self.notif then return end
 		
-		local exit_tween = service_proxy.TweenService:Create(
+		local exit_tween = tween_service:Create(
 			self.notif,
 			global_tween_info,
 			{
@@ -996,7 +999,7 @@ do
 			}
 		)
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.notif.Border,
 			global_tween_info,
 			{
@@ -1004,7 +1007,7 @@ do
 			}
 		):Play()
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.content_frame.Title,
 			global_tween_info,
 			{
@@ -1012,7 +1015,7 @@ do
 			}
 		):Play()
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.content_frame.Body,
 			global_tween_info,
 			{
@@ -1020,7 +1023,7 @@ do
 			}
 		):Play()
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.content_frame.Icon,
 			global_tween_info,
 			{
@@ -1232,12 +1235,7 @@ do
 	end
 end
 
-local tab_class = {
-	tab = nil,
-	content_frame = nil,
-	click_callback = nil,
-	connections = { }
-}
+local tab_class = table.create(8)
 tab_class.__index = tab_class
 setmetatable(tab_class, { __index = container_base })
 
@@ -1262,15 +1260,17 @@ do
 	end
 	
 	function tab_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 	
 	function tab_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 		
 		if self.tab then
@@ -1393,7 +1393,7 @@ do
 				hover_tween:Cancel()
 			end
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				glowtop_1,
 				global_tween_info,
 				{
@@ -1401,7 +1401,7 @@ do
 				}
 			):Play()
 			
-			local scoop = service_proxy.TweenService:Create(
+			local scoop = tween_service:Create(
 				gradient_1,
 				TweenInfo.new(
 					0.2,
@@ -1419,7 +1419,7 @@ do
 			
 			if not hovering then return end
 
-			hover_tween = service_proxy.TweenService:Create(
+			hover_tween = tween_service:Create(
 				gradient_1,
 				global_tween_info,
 				{
@@ -1437,7 +1437,7 @@ do
 				hover_tween:Cancel()
 			end
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				glowtop_1,
 				global_tween_info,
 				{
@@ -1445,7 +1445,7 @@ do
 				}
 			):Play()
 
-			hover_tween = service_proxy.TweenService:Create(
+			hover_tween = tween_service:Create(
 				gradient_1,
 				global_tween_info,
 				{
@@ -1501,13 +1501,7 @@ do
 	end
 end
 
-local sidebar_class = {
-	sidebar = nil,
-	active_tab = nil,
-	collapsed = true,
-	tabs = { },
-	connections = { }
-}
+local sidebar_class = table.create(8)
 sidebar_class.__index = sidebar_class
 
 do
@@ -1515,6 +1509,7 @@ do
 		if not self.tab_frame then return end
 		
 		local new_tab = setmetatable({}, tab_class)
+		new_tab.connections = table.create(8)
 		
 		new_tab:_CreateTab(
 			self.tab_frame.CenterSection,
@@ -1525,12 +1520,16 @@ do
 		
 		new_tab._CreateTab = nil
 		new_tab._CreateTabContent = nil
+		new_tab.content_frame.Visible = false
+		new_tab.is_active = false
 		
-		new_tab.tab.LayoutOrder = #self.tabs - 1
+		new_tab.tab.LayoutOrder = #self.tabs
 		table.insert(self.tabs, new_tab)
 		
 		local tab_idx = #self.tabs
-		if not self.active_tab and tab_idx > 1 then
+		if not self.active_tab then
+			self:_SetActiveTab(tab_idx)
+		elseif self.active_tab == 1 and tab_idx == 2 then
 			self:_SetActiveTab(tab_idx)
 		end
 		
@@ -1549,7 +1548,7 @@ do
 
 		self.animating = true
 
-		local sidebar_tween = service_proxy.TweenService:Create(
+		local sidebar_tween = tween_service:Create(
 			self.sidebar,
 			global_tween_info,
 			{
@@ -1576,7 +1575,7 @@ do
 
 		self.animating = true
 
-		local sidebar_tween = service_proxy.TweenService:Create(
+		local sidebar_tween = tween_service:Create(
 			self.sidebar,
 			global_tween_info,
 			{
@@ -1596,7 +1595,8 @@ do
 	end
 	
 	function sidebar_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 	
@@ -1609,7 +1609,7 @@ do
 			active_tab.is_active = false
 			active_tab.content_frame.Visible = false
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				active_tab.tab.glowtop1,
 				global_tween_info,
 				{
@@ -1621,7 +1621,7 @@ do
 		tab.is_active = true
 		tab.content_frame.Visible = true
 		
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			tab.tab.glowtop1,
 			global_tween_info,
 			{
@@ -1633,6 +1633,9 @@ do
 	end
 	
 	function sidebar_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,tab in ipairs(self.tabs) do
 			pcall(function()
 				tab:_Destroy()
@@ -1640,9 +1643,7 @@ do
 		end
 		
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 
 		if self.menu_toggle then
@@ -1819,6 +1820,7 @@ do
 		if not self.tab_frame then return end
 
 		local new_tab = setmetatable({}, tab_class)
+		new_tab.connections = table.create(8)
 
 		new_tab:_CreateTab(
 			self.tab_frame.TopSection,
@@ -1850,6 +1852,7 @@ do
 		if not self.tab_frame then return end
 
 		local new_tab = setmetatable({}, tab_class)
+		new_tab.connections = table.create(8)
 
 		new_tab:_CreateTab(
 			self.tab_frame.TopSection,
@@ -1950,11 +1953,7 @@ do
 	end
 end
 
-local region_class = {
-	region = nil,
-	content_frame = nil,
-	connections = { }
-}
+local region_class = table.create(8)
 region_class.__index = region_class
 setmetatable(region_class, { __index = container_base })
 
@@ -1964,15 +1963,17 @@ do
 	end
 
 	function region_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 
 	function region_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 
 		if self.region then
@@ -2059,9 +2060,7 @@ do
 	end
 end
 
-local label_class = {
-	label = nil
-}
+local label_class = table.create(8)
 label_class.__index = label_class
 
 do
@@ -2071,6 +2070,9 @@ do
 	end
 	
 	function label_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		if self.label then
 			pcall(function()
 				self.label:Destroy()
@@ -2112,10 +2114,7 @@ do
 	end
 end
 
-local console_class = {
-	console = nil,
-	callback = nil
-}
+local console_class = table.create(8)
 console_class.__index = console_class
 
 do
@@ -2138,6 +2137,9 @@ do
 	end
 
 	function console_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		if self.label then
 			pcall(function()
 				self.label:Destroy()
@@ -2327,40 +2329,40 @@ do
 	end
 end
 
-local sliderfloat_class = {
-	sliderfloat = nil,
-	value = nil,
-	dragging = false,
-	callback = nil,
-	connections = { }
-}
+local sliderfloat_class = table.create(8)
 sliderfloat_class.__index = sliderfloat_class
 
 do
 	function sliderfloat_class:SetValue(value)
-		self.raw_value = value
-		self.value = string.format(self.format, value)
+		local precision = tonumber(self.format:match("%%%.(%d)f"))
+		local multiplier = 10 ^ precision
+		local rounded = math.floor(value * multiplier + 0.5) / multiplier
+		
+		if self.callback and rounded ~= self.value then
+			self:callback(rounded)
+		end
+
+		self.raw_value = rounded
+		self.value = tostring(rounded)
 		self.track.Value.Text = self.value
 		
 		self.grab.Position = UDim2.new(0, self:_GetSliderOffset(), 0.5, 0)
-		
-		if self.callback then
-			self:callback(value)
-		end
 		
 		return self
 	end
 	
 	function sliderfloat_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 	
 	function sliderfloat_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 
 		if self.sliderfloat then
@@ -2375,18 +2377,21 @@ do
 	
 	function sliderfloat_class:_Update(input)
 		local mouse_x = input.Position.X
-
 		local value, offset = self:_GetValueFromMouse(mouse_x)
 		
-		self.raw_value = value
-		self.value = string.format(self.format, value)
+		local precision = tonumber(self.format:match("%%%.(%d)f"))
+		local multiplier = 10 ^ precision
+		local rounded = math.floor(value * multiplier + 0.5) / multiplier
+		
+		if self.callback and rounded ~= self.value then
+			self:callback(rounded)
+		end
+		
+		self.raw_value = rounded
+		self.value = tostring(rounded)
 		self.track.Value.Text = self.value
 
 		self.grab.Position = UDim2.new(0, offset, 0.5, 0)
-
-		if self.callback then
-			self:callback(value)
-		end
 	end
 	
 	function sliderfloat_class:_GetValueFromMouse(mouse_x)
@@ -2547,7 +2552,7 @@ do
 		self:_TrackConnection(track.MouseEnter:Connect(function()
 			if not self.grab then return end
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.grab,
 				global_tween_info,
 				{
@@ -2559,7 +2564,7 @@ do
 		self:_TrackConnection(track.MouseLeave:Connect(function()
 			if not self.grab then return end
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.grab,
 				global_tween_info,
 				{
@@ -2568,12 +2573,12 @@ do
 			):Play()
 		end))
 		
-		self:_TrackConnection(service_proxy.UserInputService.InputChanged:Connect(function(input)
+		self:_TrackConnection(userinput_service.InputChanged:Connect(function(input)
 			if not self.dragging or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
 			self:_Update(input)
 		end))
 		
-		self:_TrackConnection(service_proxy.UserInputService.InputEnded:Connect(function(input)
+		self:_TrackConnection(userinput_service.InputEnded:Connect(function(input)
 			if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
 			self.dragging = false
 		end))
@@ -2706,12 +2711,7 @@ do
 	end
 end
 
-local checkbox_class = {
-	checkbox = nil,
-	value = nil,
-	callback = nil,
-	connections = { }
-}
+local checkbox_class = table.create(8)
 checkbox_class.__index = checkbox_class
 
 do
@@ -2726,15 +2726,17 @@ do
 	end
 	
 	function checkbox_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 
 	function checkbox_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 
 		if self.checkbox then
@@ -2752,7 +2754,7 @@ do
 		if not self.tick then return end
 		
 		if value then
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick,
 				global_tween_info,
 				{
@@ -2761,7 +2763,7 @@ do
 				}
 			):Play()
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick.UICorner,
 				global_tween_info,
 				{
@@ -2769,7 +2771,7 @@ do
 				}
 			):Play()
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick.UIStroke,
 				global_tween_info,
 				{
@@ -2777,7 +2779,7 @@ do
 				}
 			):Play()
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick.glowtop,
 				global_tween_info,
 				{
@@ -2785,7 +2787,7 @@ do
 				}
 			):Play()
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick.glowtop_2,
 				global_tween_info,
 				{
@@ -2793,7 +2795,7 @@ do
 				}
 			):Play()
 		else
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick,
 				global_tween_info,
 				{
@@ -2802,7 +2804,7 @@ do
 				}
 			):Play()
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick.UICorner,
 				global_tween_info,
 				{
@@ -2810,7 +2812,7 @@ do
 				}
 			):Play()
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick.UIStroke,
 				global_tween_info,
 				{
@@ -2818,7 +2820,7 @@ do
 				}
 			):Play()
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick.glowtop,
 				global_tween_info,
 				{
@@ -2826,7 +2828,7 @@ do
 				}
 			):Play()
 			
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick.glowtop_2,
 				global_tween_info,
 				{
@@ -2922,7 +2924,7 @@ do
 		self:_TrackConnection(tickbox.MouseEnter:Connect(function()
 			if not self.tick then return end
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick,
 				global_tween_info,
 				{
@@ -2934,7 +2936,7 @@ do
 		self:_TrackConnection(tickbox.MouseLeave:Connect(function()
 			if not self.tick then return end
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.tick,
 				global_tween_info,
 				{
@@ -3027,12 +3029,7 @@ do
 	end
 end
 
-local button_class = {
-	button = nil,
-	style = nil,
-	callback = nil,
-	connections = { }
-}
+local button_class = table.create(8)
 button_class.__index = button_class
 
 do
@@ -3042,15 +3039,17 @@ do
 	end
 	
 	function button_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 
 	function button_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 
 		if self.button then
@@ -3143,7 +3142,7 @@ do
 		self:_TrackConnection(button.MouseEnter:Connect(function()
 			if not self.button then return end
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.button.UIStroke,
 				global_tween_info,
 				{
@@ -3155,7 +3154,7 @@ do
 		self:_TrackConnection(button.MouseLeave:Connect(function()
 			if not self.button then return end
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.button.UIStroke,
 				global_tween_info,
 				{
@@ -3167,7 +3166,7 @@ do
 		self:_TrackConnection(button.MouseButton1Down:Connect(function()
 			if not self.button then return end
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.button,
 				global_tween_info,
 				{
@@ -3179,7 +3178,7 @@ do
 		self:_TrackConnection(button.MouseButton1Up:Connect(function()
 			if not self.button then return end
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				self.button,
 				global_tween_info,
 				{
@@ -3200,12 +3199,7 @@ do
 	end
 end
 
-local keybind_class = {
-	keybind = nil,
-	value = nil,
-	callback = nil,
-	connections = { }
-}
+local keybind_class = table.create(8)
 keybind_class.__index = keybind_class
 
 do
@@ -3221,15 +3215,17 @@ do
 	end
 	
 	function keybind_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 
 	function keybind_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 
 		if self.keybind then
@@ -3356,7 +3352,7 @@ do
 			end
 		end))
 
-		self:_TrackConnection(service_proxy.UserInputService.InputBegan:Connect(function(input, processed)
+		self:_TrackConnection(userinput_service.InputBegan:Connect(function(input, processed)
 			if processed or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
 
 			if self.listening then
@@ -3378,18 +3374,17 @@ do
 	end
 end
 
-local combo_class = {
-	combo = nil,
-	callback = nil,
-	value = nil,
-	items = { },
-	connections = { }
-}
+local combo_class = table.create(8)
 combo_class.__index = combo_class
 
 do
 	function combo_class:GetItems()
 		return self.items
+	end
+	
+	function combo_class:Clear()
+		table.clear(self.items)
+		self:_RefreshItems()
 	end
 
 	function combo_class:AddItem(item)
@@ -3400,7 +3395,7 @@ do
 	function combo_class:Expand()
 		if not self.collapsed then return end
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.combo.Display.Arrow,
 			global_tween_info,
 			{
@@ -3415,7 +3410,7 @@ do
 	function combo_class:Collapse()
 		if self.collapsed then return end
 
-		service_proxy.TweenService:Create(
+		tween_service:Create(
 			self.combo.Display.Arrow,
 			global_tween_info,
 			{
@@ -3432,16 +3427,22 @@ do
 		return self
 	end
 	
+	function combo_class:GetValue()
+		return self.value
+	end
+	
 	function combo_class:_TrackConnection(conn)
-		table.insert(self.connections, conn)
+		local t = self.connections
+		t[#t+1] = conn
 		return conn
 	end
 
 	function combo_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
 		for _,conn in ipairs(self.connections) do
-			pcall(function()
-				conn:Disconnect()
-			end)
+			if conn.Connected then conn:Disconnect() end
 		end
 
 		if self.combo then
@@ -3532,6 +3533,7 @@ do
 		combo.BorderColor3 = Color3.fromRGB(0, 0, 0)
 		combo.BorderSizePixel = 0
 		combo.Size = UDim2.new(1, 0, 0, 20)
+		combo.ZIndex = 99
 
 		combo.Destroying:Once(self._Destroy)
 		
@@ -3692,9 +3694,7 @@ do
 	end
 end
 
-local separator_class = {
-	separator = nil
-}
+local separator_class = table.create(8)
 separator_class.__index = separator_class
 
 do
@@ -3733,6 +3733,158 @@ do
 	end
 end
 
+local inputtext_class = table.create(8)
+inputtext_class.__index = inputtext_class
+
+do
+	function inputtext_class:Clear()
+		if not self.input then return end
+		self.input.Text = ""
+		return self
+	end
+	
+	function inputtext_class:SetValue(value)
+		self:_ChangeValue(value)
+		return self
+	end
+	
+	function inputtext_class:_TrackConnection(conn)
+		local t = self.connections
+		t[#t+1] = conn
+		return conn
+	end
+
+	function inputtext_class:_Destroy()
+		if not self or self.destroying then return end
+		self.destroying = true
+		
+		for _,conn in ipairs(self.connections) do
+			if conn.Connected then conn:Disconnect() end
+		end
+
+		if self.input.Parent then
+			pcall(function()
+				self.input.Parent:Destroy()
+			end)
+		end
+
+		self.connections = nil
+		self.input = nil
+	end
+	
+	function inputtext_class:_ChangeValue(value)
+		if not self.input then return end
+
+		self.input.Text = value
+		self.value = value
+	end
+	
+	function inputtext_class:_CreateInputText(parent, config)
+		if self.input then return end
+		self.value = config.Value
+		self.callback = config.Callback
+		
+		local inputtext = Instance.new("Frame")
+		inputtext.Name = "InputText"
+		inputtext.Parent = parent
+		inputtext.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		inputtext.BackgroundTransparency = 1.000
+		inputtext.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		inputtext.BorderSizePixel = 0
+		inputtext.Size = UDim2.new(1, 0, 0, 20)
+
+		inputtext.Destroying:Once(self._Destroy)
+
+		local list_layout = Instance.new("UIListLayout")
+		list_layout.Parent = inputtext
+		list_layout.Padding = UDim.new(0, 4)
+		list_layout.FillDirection = Enum.FillDirection.Horizontal
+		list_layout.SortOrder = Enum.SortOrder.LayoutOrder
+		list_layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		list_layout.HorizontalFlex = Enum.UIFlexAlignment.Fill
+		list_layout.VerticalAlignment = Enum.VerticalAlignment.Center
+		list_layout.VerticalFlex = Enum.UIFlexAlignment.Fill
+		
+		local display = Instance.new("Frame")
+		display.Name = "Display"
+		display.Parent = inputtext
+		display.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		display.BackgroundTransparency = 0.300
+		display.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		display.BorderSizePixel = 0
+		display.Size = UDim2.new(0.5, 0, 1, 0)
+
+		local corner_radius = Instance.new("UICorner")
+		corner_radius.Parent = display
+		corner_radius.CornerRadius = UDim.new(0, 2)
+
+		local gradient = Instance.new("UIGradient")
+		gradient.Color = ColorSequence.new{ColorSequenceKeypoint.new(0.00, Color3.fromRGB(31, 30, 41)), ColorSequenceKeypoint.new(0.50, Color3.fromRGB(25, 23, 32)), ColorSequenceKeypoint.new(1.00, Color3.fromRGB(31, 30, 41))}
+		gradient.Parent = display
+
+		local padding = Instance.new("UIPadding")
+		padding.Parent = display
+		padding.PaddingBottom = UDim.new(0, 2)
+		padding.PaddingLeft = UDim.new(0, 2)
+		padding.PaddingRight = UDim.new(0, 2)
+		padding.PaddingTop = UDim.new(0, 2)
+
+		local border = Instance.new("UIStroke")
+		border.Parent = display
+		border.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		border.Color = Color3.fromRGB(134, 134, 147)
+		border.Transparency = 0.800
+		
+		local input = Instance.new("TextBox")
+		input.Name = "Input"
+		input.Parent = display
+		input.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		input.BackgroundTransparency = 1
+		input.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		input.BorderSizePixel = 0
+		input.ClearTextOnFocus = false
+		input.Size = UDim2.new(1, 0, 1, 0)
+		input.ClipsDescendants = true
+		input.AutoLocalize = false
+		input.PlaceholderColor3 = Color3.fromRGB(141, 127, 141)
+		input.PlaceholderText = config.Placeholder
+		input.Font = "Montserrat"
+		input.FontFace.Weight = Enum.FontWeight.Medium
+		input.Text = config.Value
+		input.TextColor3 = Color3.fromRGB(200, 180, 200)
+		input.TextSize = 14
+		input.TextTruncate = Enum.TextTruncate.AtEnd
+		input.TextXAlignment = Enum.TextXAlignment.Left
+
+		local label = Instance.new("TextLabel")
+		label.Name = "Label"
+		label.Parent = inputtext
+		label.AutomaticSize = Enum.AutomaticSize.XY
+		label.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		label.BackgroundTransparency = 1
+		label.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		label.BorderSizePixel = 0
+		label.LayoutOrder = 1
+		label.Size = UDim2.new(0, 5, 0, 5)
+		label.Font = "Montserrat"
+		label.FontFace.Weight = Enum.FontWeight.Medium
+		label.Text = config.Label
+		label.TextColor3 = Color3.fromRGB(200, 180, 200)
+		label.TextSize = 14
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		
+		self:_TrackConnection(input:GetPropertyChangedSignal("Text"):Connect(function()
+			self.value = input.Text
+			
+			if self.callback then
+				self:callback(self.value)
+			end
+		end))
+		
+		self.input = input
+	end
+end
+
 --[[
 	Helper Service
 ]]
@@ -3765,8 +3917,9 @@ helper_service = { } do
 	
 	function helper_service:HSRandomString(length)
 		local result = ""
+		if not self.rng then self.rng = Random.new() end
 		for i = 1, length do
-			result = result..string.char(Random.new():NextInteger(1,255))
+			result = result..string.char(self.rng:NextInteger(1,255))
 		end
 		return result
 	end
@@ -3822,6 +3975,10 @@ coreui_service = { } do
 	function coreui_service:CSWindowCreate(config)
 		local new_window_obj = setmetatable({}, window_class)
 		
+		new_window_obj.destroyed = false
+		new_window_obj.tweens = table.create(8)
+		new_window_obj.connections = table.create(8)
+		
 		new_window_obj:_CreateWindow(coreui_service:CSGetSafeGui(), config)
 		new_window_obj:_CreateWindowGlow()
 		new_window_obj:_CreateWindowContent()
@@ -3847,6 +4004,10 @@ coreui_service = { } do
 	function coreui_service:CSSidebarCreate(parent)
 		local new_sidebar_obj = setmetatable({}, sidebar_class)
 		
+		new_sidebar_obj.collapsed = true
+		new_sidebar_obj.tabs = table.create(8)
+		new_sidebar_obj.connections = table.create(8)
+		
 		new_sidebar_obj:_CreateSidebar(parent)
 		new_sidebar_obj:_CreateSidebarContent(parent)
 		new_sidebar_obj:_CreateMenuToggle()
@@ -3858,6 +4019,7 @@ coreui_service = { } do
 	
 	function coreui_service:CSRegionCreate(parent, config)
 		local new_region_obj = setmetatable({}, region_class)
+		new_region_obj.connections = table.create(8)
 		
 		new_region_obj:_CreateRegion(parent, config)
 		new_region_obj:_CreateRegionContent()
@@ -3892,6 +4054,9 @@ coreui_service = { } do
 	function coreui_service:CSSliderFloatCreate(parent, config)
 		local new_sliderfloat_obj = setmetatable({}, sliderfloat_class)
 		
+		new_sliderfloat_obj.dragging = false
+		new_sliderfloat_obj.connections = table.create(8)
+		
 		new_sliderfloat_obj:_CreateSliderFloat(parent, config)
 		new_sliderfloat_obj:_CreateSliderGrab()
 		
@@ -3900,6 +4065,7 @@ coreui_service = { } do
 	
 	function coreui_service:CSCheckboxCreate(parent, config)
 		local new_checkbox_obj = setmetatable({}, checkbox_class)
+		new_checkbox_obj.connections = table.create(8)
 		
 		new_checkbox_obj:_CreateCheckbox(parent, config)
 		new_checkbox_obj:_CreateTick()
@@ -3925,6 +4091,7 @@ coreui_service = { } do
 	
 	function coreui_service:CSButtonCreate(parent, config)
 		local new_button_obj = setmetatable({}, button_class)
+		new_button_obj.connections = table.create(8)
 		
 		new_button_obj:_CreateButton(parent, config)
 		new_button_obj:_SetButtonStyle(config.Style)
@@ -3934,6 +4101,7 @@ coreui_service = { } do
 	
 	function coreui_service:CSKeybindCreate(parent, config)
 		local new_keybind_obj = setmetatable({}, keybind_class)
+		new_keybind_obj.connections = table.create(8)
 		
 		new_keybind_obj:_CreateKeybind(parent, config)
 		
@@ -3942,6 +4110,9 @@ coreui_service = { } do
 	
 	function coreui_service:CSComboCreate(parent, config)
 		local new_combo_obj = setmetatable({}, combo_class)
+		
+		new_combo_obj.items = table.create(8)
+		new_combo_obj.connections = table.create(8)
 		
 		new_combo_obj:_CreateCombo(parent, config)
 		new_combo_obj:_CreateDropdownMenu()
@@ -3956,19 +4127,30 @@ coreui_service = { } do
 		
 		return new_separator_obj
 	end
+	
+	function coreui_service:CSInputTextCreate(parent, config)
+		local new_inputtext_obj = setmetatable({}, inputtext_class)
+		new_inputtext_obj.connections = table.create(8)
+
+		new_inputtext_obj:_CreateInputText(parent, config)
+
+		return new_inputtext_obj
+	end
 end
 
 --[[
 	Notification Service
 ]]
 notification_service = {
-	notifs = { }	
+	notifs = table.create(8)	
 } do
+	setmetatable(notification_service.notifs, { __mode = "v" })
+	
 	function notification_service:NSRepositionNotifs()
 		for index, notif in ipairs(self.notifs) do
 			local target_y = -20 - ((index - 1) * (120 + 10))
 
-			service_proxy.TweenService:Create(
+			tween_service:Create(
 				notif.notif.Parent,
 				TweenInfo.new(
 					0.35,
@@ -3999,9 +4181,9 @@ end
 ]]
 ini_service = {
 	ini_to_save = {
-		"Value"
+		"value"
 	},
-	ini_settings = { }
+	ini_settings = table.create(8)
 } do
 	function ini_service:ISGetIniData(class)
 		local ini_to_save = self.ini_to_save
@@ -4019,11 +4201,11 @@ ini_service = {
 		local parsed_json = {}
 
 		for flag, element in next, ini_settings do
-			parsed_json[flag] = self:GetIniData(element)
+			parsed_json[flag] = self:ISGetIniData(element)
 		end
 
 		if json_encode then
-			return service_proxy.HttpService:JSONEncode(parsed_json)
+			return http_service:JSONEncode(parsed_json)
 		end
 
 		return parsed_json
@@ -4031,7 +4213,7 @@ ini_service = {
 	
 	function ini_service:ISLoadIniIntoElement(element, values)
 		local value_funcs = {
-			["Value"] = function(value)
+			["value"] = function(value)
 				element:SetValue(value)
 			end,
 		}
@@ -4052,12 +4234,12 @@ ini_service = {
 		assert(new_settings, "No Ini configuration was passed")
 
 		if json_encoded then
-			new_settings = service_proxy.HttpService:JSONDecode(new_settings)
+			new_settings = http_service:JSONDecode(new_settings)
 		end
 
 		for flag, value in next, new_settings do
 			local element = ini_settings[flag]
-			self:LoadIniIntoElement(element, value)
+			self:ISLoadIniIntoElement(element, value)
 		end
 	end
 
@@ -4289,12 +4471,102 @@ fui:RegisterElement("Separator", function(parent, config)
 end)
 
 fui:RegisterElement("PopupModal", function(parent, config)
-	-- TODO: Implement
+	config = helper_service:HSMerge({
+		Title = "PopupModal",
+		Size = UDim2.fromOffset(372, 38),
+		AutomaticSize = Enum.AutomaticSize.XY,
+		NoCollapse = true,
+		NoClose = true,
+		Collapsed = false,
+		SmoothDrag = false
+	}, config)
+
+	local object = fui:Window(config)
+
+	local modal_effect = Instance.new("TextButton")
+	modal_effect.Name = "ModalEffect"
+	modal_effect.Parent = parent:GetContainer()
+	modal_effect.AnchorPoint = Vector2.new(0.5, 0.5)
+	modal_effect.AutoButtonColor = false
+	modal_effect.Position = UDim2.new(0.5, 0, 0.5, 0)
+	modal_effect.Size = UDim2.new(1, 0, 1, 0)
+	modal_effect.BackgroundColor3 = Color3.fromRGB(26, 25, 33)
+	modal_effect.BackgroundTransparency = 1
+	modal_effect.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	modal_effect.BorderSizePixel = 0
+	modal_effect.Selectable = false
+	modal_effect.Text = ""
+	modal_effect.TextTransparency = 1
+	modal_effect.ZIndex = 99
+
+	object.window.Parent = modal_effect
+	object.window.AnchorPoint = Vector2.new(0.5, 0.5)
+	object.window.AutomaticSize = config.AutomaticSize
+	object.modal_effect = modal_effect
+	
+	local list_layout = Instance.new("UIListLayout")
+	list_layout.Parent = object:GetContainer()
+	list_layout.Padding = UDim.new(0, 4)
+	list_layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+	local padding = Instance.new("UIPadding")
+	padding.Parent = object:GetContainer()
+	padding.PaddingBottom = UDim.new(0, 8)
+	padding.PaddingLeft = UDim.new(0, 8)
+	padding.PaddingRight = UDim.new(0, 8)
+	padding.PaddingTop = UDim.new(0, 8)
+
+	local old_destroy = object._Destroy
+	function object:_Destroy()
+		old_destroy(self)
+		
+		if self.modal_effect then
+			self.modal_effect:Destroy()
+			self.modal_effect = nil
+		end
+	end
+
+	object:AddTween(modal_effect, {
+		BackgroundTransparency = 0.3
+	}):Play()
+
+	function object:ClosePopup()
+		if self.destroyed then return end
+
+		local tween = self:AddTween(modal_effect, {
+			BackgroundTransparency = 1
+		})
+
+		if tween then
+			tween:Play()
+			tween.Completed:Wait()
+		end
+
+		self:Close()
+	end
+
+	return object:Center()
 end)
 
 fui:RegisterElement("InputText", function(parent, config)
-	-- TODO: Implement
+	config = helper_service:HSMerge({
+		Value = "",
+		Placeholder = "Type here...",
+		Label = "InputText",
+		Callback = nil
+	}, config)
+	
+	local object = coreui_service:CSInputTextCreate(parent:GetContainer(), config)
+	
+	object._CreateInputText = nil
+	object._TrackConnection = nil
+	
+	return object
 end)
+
+tween_service = service_proxy.TweenService
+userinput_service = service_proxy.UserInputService
+http_service = service_proxy.HttpService
 
 if genv then
 	genv.__FUI_ENV = fui
